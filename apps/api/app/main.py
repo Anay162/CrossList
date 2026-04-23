@@ -3,6 +3,7 @@ from fastapi import HTTPException
 from pydantic import BaseModel
 from sqlalchemy import text
 
+from app.stats import fetch_stats
 from db.session import async_engine
 
 
@@ -36,3 +37,11 @@ async def health_db() -> dict[str, object]:
 def match_courses(payload: MatchRequest) -> dict[str, object]:
     _ = payload
     return {"matches": [], "phase": 1, "message": "not implemented"}
+
+
+@app.get("/api/stats")
+async def stats() -> dict[str, object]:
+    try:
+        return (await fetch_stats()).as_dict()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"stats unavailable: {exc}") from exc

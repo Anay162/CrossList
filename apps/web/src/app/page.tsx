@@ -21,7 +21,34 @@ const steps = [
   },
 ] as const;
 
-export default function Home() {
+type StatsPayload = {
+  institutions: number;
+  courses: number;
+  articulations: number;
+};
+
+async function getStats(): Promise<StatsPayload | null> {
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+
+  try {
+    const response = await fetch(`${apiUrl}/api/stats`, {
+      cache: "no-store",
+    });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const data = (await response.json()) as StatsPayload;
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+export default async function Home() {
+  const stats = await getStats();
+
   return (
     <main className="min-h-screen">
       <section className="mx-auto flex min-h-screen w-full max-w-6xl flex-col items-center justify-center px-6 py-24 text-center sm:px-10">
@@ -40,6 +67,12 @@ export default function Home() {
             don&apos;t. Built for community college students trying to transfer with fewer lost
             credits.
           </p>
+          {stats ? (
+            <p className="mx-auto max-w-2xl text-sm leading-7 text-slate-500">
+              {stats.courses} courses indexed across {stats.institutions} institutions.{" "}
+              {stats.articulations} articulations loaded.
+            </p>
+          ) : null}
         </div>
         <div className="mt-10 flex flex-col items-center gap-4 sm:flex-row">
           <div title="Coming in Phase 3">
