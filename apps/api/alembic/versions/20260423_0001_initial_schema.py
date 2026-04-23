@@ -18,9 +18,9 @@ branch_labels = None
 depends_on = None
 
 
-institution_kind = sa.Enum("CC", "UC", "CSU", "OTHER", name="institution_kind")
-articulation_type = sa.Enum("DIRECT", "SERIES", "OR_GROUP", "OTHER", name="articulation_type")
-scrape_run_status = sa.Enum("SUCCESS", "PARTIAL", "FAILED", name="scrape_run_status")
+institution_kind = postgresql.ENUM("CC", "UC", "CSU", "OTHER", name="institution_kind", create_type=False)
+articulation_type = postgresql.ENUM("DIRECT", "SERIES", "OR_GROUP", "OTHER", name="articulation_type", create_type=False)
+scrape_run_status = postgresql.ENUM("SUCCESS", "PARTIAL", "FAILED", name="scrape_run_status", create_type=False)
 
 
 def upgrade() -> None:

@@ -16,9 +16,9 @@ def _require_database_url() -> str:
 def _with_driver(database_url: str, drivername: str) -> str:
     url: URL = make_url(database_url)
     if url.drivername == drivername:
-        return str(url)
+        return url.render_as_string(hide_password=False)
 
-    return str(url.set(drivername=drivername))
+    return url.set(drivername=drivername).render_as_string(hide_password=False)
 
 
 def get_async_database_url() -> str:
