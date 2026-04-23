@@ -1,0 +1,12 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: crosslist-postgres
+    environment:
+      POSTGRES_DB: crosslist
+      POSTGRES_USER: crosslist
+      POSTGRES_PASSWORD: crosslist
+    ports:
+      - "5433:5432"
+    volumes:
+      - ../data/pg:/var/lib/postgresql/data
