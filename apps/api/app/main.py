@@ -1,15 +1,37 @@
-from fastapi import FastAPI
-from fastapi import HTTPException
+from __future__ import annotations
+
+from uuid import UUID
+
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import text
 
 from app.stats import fetch_stats
 from db.session import async_engine
+from matching import MatchResult, match_courses
+
+INSTITUTION_ALIASES = {
+    "SMC": "SMC",
+    "SJSU": "SJSU",
+    "UCD": "UC Davis",
+    "UC DAVIS": "UC Davis",
+}
 
 
 class MatchRequest(BaseModel):
     source_course_id: str
     target_institution_id: str
+
+
+class SourceCourseInput(BaseModel):
+    institution_short_name: str
+    course_code: str
+
+
+class ApiMatchRequest(BaseModel):
+    source_courses: list[SourceCourseInput]
+    target_institution_short_name: str
+    similarity_threshold: float = 0.82
 
 
 app = FastAPI(title="CrossList API")
@@ -34,7 +56,7 @@ async def health_db() -> dict[str, object]:
 
 
 @app.post("/courses/match")
-def match_courses(payload: MatchRequest) -> dict[str, object]:
+def legacy_match_courses(payload: MatchRequest) -> dict[str, object]:
     _ = payload
     return {"matches": [], "phase": 1, "message": "not implemented"}
 
@@ -45,3 +67,69 @@ async def stats() -> dict[str, object]:
         return (await fetch_stats()).as_dict()
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"stats unavailable: {exc}") from exc
+
+
+def normalize_institution_short_name(value: str) -> str:
+    normalized = value.strip().upper()
+    return INSTITUTION_ALIASES.get(normalized, value.strip())
+
+
+def split_course_code(value: str) -> tuple[str, str]:
+    parts = value.strip().split(None, 1)
+    if len(parts) != 2:
+        raise HTTPException(status_code=400, detail=f"Invalid course code '{value}'. Use format like 'MATH 7'.")
+    return parts[0].upper(), parts[1].strip()
+
+
+async def resolve_institution_id(short_name: str) -> UUID:
+    query = text("SELECT id FROM institutions WHERE short_name = :short_name")
+    async with async_engine.connect() as connection:
+        institution_id = await connection.scalar(
+            query,
+            {"short_name": normalize_institution_short_name(short_name)},
+        )
+    if institution_id is None:
+        raise HTTPException(status_code=400, detail=f"Institution '{short_name}' was not found.")
+    return institution_id
+
+
+async def resolve_source_course_id(institution_short_name: str, course_code: str) -> UUID:
+    subject_code, number = split_course_code(course_code)
+    query = text(
+        """
+        SELECT c.id
+        FROM courses c
+        JOIN subjects s ON s.id = c.subject_id
+        JOIN institutions i ON i.id = c.institution_id
+        WHERE i.short_name = :institution_short_name
+          AND s.code = :subject_code
+          AND c.code = :course_number
+        """
+    )
+    params = {
+        "institution_short_name": normalize_institution_short_name(institution_short_name),
+        "subject_code": subject_code,
+        "course_number": number,
+    }
+    async with async_engine.connect() as connection:
+        course_id = await connection.scalar(query, params)
+    if course_id is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Course '{course_code}' was not found for institution '{institution_short_name}'.",
+        )
+    return course_id
+
+
+@app.post("/api/match", response_model=list[MatchResult])
+async def api_match(payload: ApiMatchRequest) -> list[MatchResult]:
+    source_course_ids = [
+        await resolve_source_course_id(item.institution_short_name, item.course_code)
+        for item in payload.source_courses
+    ]
+    target_institution_id = await resolve_institution_id(payload.target_institution_short_name)
+    return await match_courses(
+        source_course_ids=source_course_ids,
+        target_institution_id=target_institution_id,
+        similarity_threshold=payload.similarity_threshold,
+    )
