@@ -12,10 +12,10 @@ from uuid import uuid4
 
 import asyncpg
 
-from .deanza import DeAnzaScraper
 from .models import InstitutionConfig, RawCourse
+from .smc import SMCScraper
 from .sjsu import SJSUScraper
-from .ucberkeley import UCBerkeleyScraper
+from .ucdavis import UCDavisScraper
 
 LOGGER = logging.getLogger("crosslist.scrapers.ingest")
 ROOT_DIR = Path(__file__).resolve().parents[3]
@@ -23,17 +23,17 @@ ROOT_DIR = Path(__file__).resolve().parents[3]
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://crosslist:crosslist@localhost:5433/crosslist")
 
 INSTITUTIONS: dict[str, InstitutionConfig] = {
-    "deanza": InstitutionConfig(
-        name="De Anza College",
-        short_name="De Anza",
+    "smc": InstitutionConfig(
+        name="Santa Monica College",
+        short_name="SMC",
         kind="CC",
-        catalog_url="https://www.deanza.edu/catalog/",
+        catalog_url="https://catalog.smc.edu/current/courses/course-finder.php",
     ),
-    "ucberkeley": InstitutionConfig(
-        name="University of California, Berkeley",
-        short_name="UC Berkeley",
+    "ucdavis": InstitutionConfig(
+        name="University of California, Davis",
+        short_name="UC Davis",
         kind="UC",
-        catalog_url="https://guide.berkeley.edu/courses/",
+        catalog_url="https://catalog.ucdavis.edu/courses-subject-code/",
     ),
     "sjsu": InstitutionConfig(
         name="San Jose State University",
@@ -49,7 +49,11 @@ def configure_logging() -> None:
 
 
 async def scrape_catalogs() -> tuple[list[dict[str, object]], dict[str, dict[str, int]]]:
-    scrapers = [DeAnzaScraper(), UCBerkeleyScraper(), SJSUScraper()]
+    scrapers = [
+        SMCScraper(polite_delay_ms=250),
+        SJSUScraper(polite_delay_ms=250),
+        UCDavisScraper(polite_delay_ms=250),
+    ]
     scraped_payloads: list[dict[str, object]] = []
     counts: dict[str, dict[str, int]] = defaultdict(dict)
 
