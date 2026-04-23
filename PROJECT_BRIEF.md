@@ -19,8 +19,8 @@ petitions.
 ## Demo scope for v1
 California Community Colleges ←→ UC + CSU system. 
 Ground truth: ASSIST.org official articulations (validates our matches). 
-Seed institutions: De Anza College (CC), UC Berkeley (UC), San Jose State 
-University (CSU). 
+Seed institutions: Santa Monica College (CC), San Jose State University (CSU), 
+UC Davis (UC). 
 Seed subjects: MATH, Computer Science (CIS/CS/CSCI), ENGL, PSYCH.
 
 ## North-star demo (3-min pitch)
