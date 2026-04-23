@@ -34,6 +34,13 @@ class ApiMatchRequest(BaseModel):
     similarity_threshold: float = 0.82
 
 
+class InstitutionResponse(BaseModel):
+    id: UUID
+    name: str
+    short_name: str
+    kind: str
+
+
 app = FastAPI(title="CrossList API")
 
 
@@ -67,6 +74,14 @@ async def stats() -> dict[str, object]:
         return (await fetch_stats()).as_dict()
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"stats unavailable: {exc}") from exc
+
+
+@app.get("/api/institutions", response_model=list[InstitutionResponse])
+async def institutions() -> list[InstitutionResponse]:
+    query = text("SELECT id, name, short_name, kind::text AS kind FROM institutions ORDER BY kind, short_name")
+    async with async_engine.connect() as connection:
+        rows = (await connection.execute(query)).mappings().all()
+    return [InstitutionResponse(**row) for row in rows]
 
 
 def normalize_institution_short_name(value: str) -> str:

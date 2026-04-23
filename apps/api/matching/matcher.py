@@ -30,6 +30,7 @@ class CourseMatch(BaseModel):
     similarity_score: float
     match_type: Literal["OFFICIAL", "SEMANTIC", "NONE"]
     articulation_id: UUID | None
+    agreement_year: int | None = None
     explanation: str | None
 
 
@@ -128,7 +129,8 @@ async def fetch_candidate_matches(
           c.description,
           c.units,
           1 - (ce.embedding <=> CAST(:query_vector AS vector)) AS similarity_score,
-          a.id AS articulation_id
+          a.id AS articulation_id,
+          a.agreement_year
         FROM course_embeddings ce
         JOIN courses c ON c.id = ce.course_id
         JOIN subjects s ON s.id = c.subject_id
@@ -177,7 +179,8 @@ async def fetch_official_matches(
           c.description,
           c.units,
           1 - (ce.embedding <=> CAST(:query_vector AS vector)) AS similarity_score,
-          a.id AS articulation_id
+          a.id AS articulation_id,
+          a.agreement_year
         FROM articulations a
         JOIN courses c ON c.id = a.to_course_id
         JOIN course_embeddings ce ON ce.course_id = c.id
@@ -249,6 +252,7 @@ async def match_courses(
             target_course = build_course_schema(row)
             score = max(0.0, min(1.0, float(row["similarity_score"] or 0.0)))
             articulation_id = row["articulation_id"]
+            agreement_year = row.get("agreement_year")
             explanation: str | None = None
 
             if articulation_id is not None:
@@ -266,6 +270,7 @@ async def match_courses(
                     similarity_score=score,
                     match_type=match_type,
                     articulation_id=articulation_id,
+                    agreement_year=agreement_year,
                     explanation=explanation,
                 )
             )

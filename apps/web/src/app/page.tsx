@@ -1,7 +1,4 @@
-import Link from "next/link";
-
-import { Button, buttonVariants } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
+import { MatchPanel } from "@/app/match-panel";
 
 const steps = [
   {
@@ -48,6 +45,7 @@ async function getStats(): Promise<StatsPayload | null> {
 
 export default async function Home() {
   const stats = await getStats();
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
   return (
     <main className="min-h-screen">
@@ -74,24 +72,9 @@ export default async function Home() {
             </p>
           ) : null}
         </div>
-        <div className="mt-10 flex flex-col items-center gap-4 sm:flex-row">
-          <div title="Coming in Phase 3">
-            <Button
-              disabled
-              size="lg"
-              className="min-w-48 rounded-full px-6 shadow-sm"
-            >
-              Check my transcript
-            </Button>
-          </div>
-          <Link
-            href="#how"
-            className={cn(buttonVariants({ variant: "outline", size: "lg" }), "min-w-40 rounded-full px-6")}
-          >
-            How it works
-          </Link>
-        </div>
       </section>
+
+      <MatchPanel apiUrl={apiUrl} />
 
       <section id="how" className="border-t border-slate-200 bg-white/70 py-24">
         <div className="mx-auto max-w-6xl px-6 sm:px-10">
