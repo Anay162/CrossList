@@ -28,3 +28,13 @@ class InstitutionConfig(BaseModel):
     short_name: str
     kind: Literal["CC", "UC", "CSU", "OTHER"]
     catalog_url: str
+
+
+class RawArticulation(BaseModel):
+    from_institution: str
+    from_course_code: str
+    to_institution: str
+    to_course_code: str
+    articulation_type: Literal["DIRECT", "SERIES", "OR_GROUP", "OTHER"]
+    agreement_year: int
+    notes: str | None = None
