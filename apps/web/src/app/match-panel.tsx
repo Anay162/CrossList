@@ -47,6 +47,8 @@ type MatchPanelProps = {
   apiUrl: string;
 };
 
+const UI_SIMILARITY_THRESHOLD = 0.6;
+
 const BADGE_STYLES: Record<MatchType, string> = {
   OFFICIAL: "bg-green-100 text-green-800 border border-green-300",
   SEMANTIC: "bg-yellow-100 text-yellow-800 border border-yellow-300",
@@ -77,9 +79,14 @@ export function MatchPanel({ apiUrl }: MatchPanelProps) {
   const [targetInstitution, setTargetInstitution] = useState("UC Davis");
   const [coursesText, setCoursesText] = useState("MATH 7\nCS 55\nENGL 1\nPSYCH 1");
   const [results, setResults] = useState<MatchResult[]>([]);
+  const [selectedResult, setSelectedResult] = useState<{
+    sourceCourse: CourseSchema;
+    match: CourseMatch;
+  } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoadingInstitutions, setIsLoadingInstitutions] = useState(true);
   const [isLoadingResults, setIsLoadingResults] = useState(false);
+  const [isDownloadingReport, setIsDownloadingReport] = useState(false);
 
   useEffect(() => {
     async function loadInstitutions() {
@@ -144,7 +151,7 @@ export function MatchPanel({ apiUrl }: MatchPanelProps) {
         body: JSON.stringify({
           source_courses: sourceCourses,
           target_institution_short_name: targetInstitution,
-          similarity_threshold: 0.82,
+          similarity_threshold: UI_SIMILARITY_THRESHOLD,
         }),
       });
 
@@ -160,6 +167,44 @@ export function MatchPanel({ apiUrl }: MatchPanelProps) {
       setError(submitError instanceof Error ? submitError.message : "Unable to find matches");
     } finally {
       setIsLoadingResults(false);
+    }
+  }
+
+  async function handleDownloadReport() {
+    if (!selectedResult) {
+      return;
+    }
+
+    setIsDownloadingReport(true);
+    try {
+      const response = await fetch(`${apiUrl}/api/match/report`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          source_course_id: selectedResult.sourceCourse.id,
+          target_course_id: selectedResult.match.target_course_id,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error("Unable to generate comparison report");
+      }
+
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `crosslist_${formatSourceCourse(selectedResult.sourceCourse).replace(/\s+/g, "_")}_${formatTargetCourse(selectedResult.match.target_course).replace(/\s+/g, "_")}.pdf`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (downloadError) {
+      setError(downloadError instanceof Error ? downloadError.message : "Unable to generate comparison report");
+    } finally {
+      setIsDownloadingReport(false);
     }
   }
 
@@ -271,7 +316,13 @@ export function MatchPanel({ apiUrl }: MatchPanelProps) {
                 }
 
                 return (
-                  <Card key={result.source_course_id} className="space-y-3">
+                  <Card
+                    key={result.source_course_id}
+                    className={cn(
+                      "space-y-3",
+                      match.match_type === "SEMANTIC" && "cursor-pointer focus-within:ring-2 focus-within:ring-yellow-300 hover:border-yellow-300"
+                    )}
+                  >
                     <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                       <div className="space-y-1">
                         <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
@@ -289,7 +340,22 @@ export function MatchPanel({ apiUrl }: MatchPanelProps) {
                       </span>
                     </div>
 
-                    <div className="space-y-2 text-sm text-slate-700">
+                    <div
+                      className="space-y-2 text-sm text-slate-700"
+                      role={match.match_type === "SEMANTIC" ? "button" : undefined}
+                      tabIndex={match.match_type === "SEMANTIC" ? 0 : -1}
+                      onClick={() => {
+                        if (match.match_type === "SEMANTIC") {
+                          setSelectedResult({ sourceCourse: result.source_course, match });
+                        }
+                      }}
+                      onKeyDown={(event) => {
+                        if (match.match_type === "SEMANTIC" && (event.key === "Enter" || event.key === " ")) {
+                          event.preventDefault();
+                          setSelectedResult({ sourceCourse: result.source_course, match });
+                        }
+                      }}
+                    >
                       <p className="font-medium text-slate-900">
                         Best match: {formatTargetCourse(match.target_course)} {match.target_course.title}
                       </p>
@@ -326,6 +392,102 @@ export function MatchPanel({ apiUrl }: MatchPanelProps) {
           )}
         </Card>
       </div>
+
+      {selectedResult ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/55 px-4 py-8">
+          <div className="max-h-[90vh] w-full max-w-5xl overflow-y-auto rounded-xl bg-white p-6 shadow-2xl">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-sm font-medium uppercase tracking-[0.18em] text-yellow-700">Likely Equivalent</p>
+                <h3 className="mt-2 text-2xl font-semibold tracking-tight text-slate-900">
+                  Course Comparison
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedResult(null)}
+                className="rounded-md border border-slate-300 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="mt-6 grid gap-6 lg:grid-cols-2">
+              <div className="space-y-3 rounded-lg border border-gray-200 p-4">
+                <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">Source Course</p>
+                <h4 className="text-lg font-semibold text-slate-900">
+                  {selectedResult.sourceCourse.institution_name}
+                </h4>
+                <p className="text-sm font-medium text-slate-900">
+                  {formatSourceCourse(selectedResult.sourceCourse)} — {selectedResult.sourceCourse.title}
+                </p>
+                <p className="text-sm text-slate-600">
+                  Units: {selectedResult.sourceCourse.units ?? "N/A"}
+                </p>
+                <p className="text-sm leading-6 text-slate-700">{selectedResult.sourceCourse.description}</p>
+              </div>
+
+              <div className="space-y-3 rounded-lg border border-gray-200 p-4">
+                <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">Target Course</p>
+                <h4 className="text-lg font-semibold text-slate-900">
+                  {selectedResult.match.target_course.institution_name}
+                </h4>
+                <p className="text-sm font-medium text-slate-900">
+                  {formatTargetCourse(selectedResult.match.target_course)} — {selectedResult.match.target_course.title}
+                </p>
+                <p className="text-sm text-slate-600">
+                  Units: {selectedResult.match.target_course.units ?? "N/A"}
+                </p>
+                <div className="space-y-2">
+                  <p className="text-sm text-slate-700">
+                    Similarity score: {Math.round(selectedResult.match.similarity_score * 100)}%
+                  </p>
+                  <div className="h-2 rounded-full bg-slate-200">
+                    <div
+                      className="h-2 rounded-full bg-yellow-500"
+                      style={{ width: `${Math.round(selectedResult.match.similarity_score * 100)}%` }}
+                    />
+                  </div>
+                </div>
+                <p className="text-sm leading-6 text-slate-700">{selectedResult.match.target_course.description}</p>
+              </div>
+            </div>
+
+            <div className="mt-6 space-y-4">
+              <div className="rounded-lg border border-yellow-200 bg-yellow-50 p-4">
+                <p className="text-sm font-medium text-slate-900">AI explanation</p>
+                <p className="mt-2 text-sm leading-6 text-slate-700">
+                  {selectedResult.match.explanation}
+                </p>
+              </div>
+
+              <div className="rounded-lg border border-gray-200 p-4">
+                <p className="text-sm font-semibold text-slate-900">Next Steps</p>
+                <p className="mt-2 text-sm leading-6 text-slate-700">
+                  This match was identified by AI similarity analysis, not by a faculty committee. To request formal credit evaluation:
+                </p>
+                <p className="mt-2 text-sm leading-6 text-slate-700">
+                  1. Download the comparison report below
+                  <br />
+                  2. Bring it to {selectedResult.match.target_course.institution_name} Admissions or your academic advisor
+                  <br />
+                  3. Ask them to initiate a course substitution petition
+                </p>
+              </div>
+
+              <Button
+                type="button"
+                size="lg"
+                className="rounded-lg"
+                onClick={() => void handleDownloadReport()}
+                disabled={isDownloadingReport}
+              >
+                {isDownloadingReport ? "Generating Report..." : "Download Comparison Report (PDF)"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }

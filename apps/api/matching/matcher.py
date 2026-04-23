@@ -108,6 +108,66 @@ async def fetch_source_bundle(source_course_id: UUID) -> tuple[CourseSchema, lis
     return course, embedding
 
 
+async def fetch_course_schema(course_id: UUID) -> CourseSchema:
+    query = text(
+        """
+        SELECT
+          c.id,
+          c.institution_id,
+          i.short_name AS institution_short_name,
+          i.name AS institution_name,
+          s.code AS subject_code,
+          c.code,
+          c.title,
+          c.description,
+          c.units
+        FROM courses c
+        JOIN subjects s ON s.id = c.subject_id
+        JOIN institutions i ON i.id = c.institution_id
+        WHERE c.id = :course_id
+        """
+    )
+    async with async_engine.connect() as connection:
+        row = (await connection.execute(query, {"course_id": course_id})).mappings().first()
+
+    if row is None:
+        raise ValueError(f"Course {course_id} was not found")
+
+    return CourseSchema(
+        id=row["id"],
+        institution_id=row["institution_id"],
+        institution_short_name=row["institution_short_name"],
+        institution_name=row["institution_name"],
+        subject_code=row["subject_code"],
+        code=row["code"],
+        title=row["title"],
+        description=row["description"],
+        units=float(row["units"]) if row["units"] is not None else None,
+    )
+
+
+async def fetch_pair_similarity(source_course_id: UUID, target_course_id: UUID) -> float:
+    query = text(
+        """
+        SELECT 1 - (source_ce.embedding <=> target_ce.embedding) AS similarity_score
+        FROM course_embeddings source_ce
+        JOIN course_embeddings target_ce ON target_ce.course_id = :target_course_id
+        WHERE source_ce.course_id = :source_course_id
+        """
+    )
+    async with async_engine.connect() as connection:
+        similarity = await connection.scalar(
+            query,
+            {
+                "source_course_id": source_course_id,
+                "target_course_id": target_course_id,
+            },
+        )
+    if similarity is None:
+        raise ValueError("Missing embedding row for comparison report")
+    return max(0.0, min(1.0, float(similarity)))
+
+
 async def fetch_candidate_matches(
     *,
     source_course_id: UUID,
