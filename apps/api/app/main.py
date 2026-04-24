@@ -15,10 +15,12 @@ from sqlalchemy import text
 from app.stats import fetch_stats
 from db.session import async_engine
 from matching import (
+    CourseMatch,
     MatchResult,
     fetch_course_schema,
     fetch_pair_similarity,
     generate_explanation,
+    match_by_description,
     match_courses,
 )
 
@@ -27,13 +29,6 @@ INSTITUTION_ALIASES = {
     "SJSU": "SJSU",
     "UCD": "UC Davis",
     "UC DAVIS": "UC Davis",
-}
-
-COURSE_CODE_ALIASES = {
-    "SMC": {
-        "ENGL 1": "ENGL 1D",
-        "PSYCH 1": "PSYCH 11",
-    }
 }
 
 
@@ -53,6 +48,26 @@ class ApiMatchRequest(BaseModel):
     similarity_threshold: float = 0.82
 
 
+class CourseSuggestion(BaseModel):
+    course_id: UUID
+    course_code: str
+    title: str
+
+
+class CourseLookupError(BaseModel):
+    course_code: str
+    error: str
+    institution: str
+
+
+class ApiMatchItem(BaseModel):
+    input_course_code: str
+    resolved_course_code: str | None = None
+    match_result: MatchResult | None = None
+    suggestions: list[CourseSuggestion] | None = None
+    error: CourseLookupError | None = None
+
+
 class InstitutionResponse(BaseModel):
     id: UUID
     name: str
@@ -63,6 +78,12 @@ class InstitutionResponse(BaseModel):
 class MatchReportRequest(BaseModel):
     source_course_id: UUID
     target_course_id: UUID
+
+
+class DescriptionMatchRequest(BaseModel):
+    description: str
+    target_institution_short_name: str
+    similarity_threshold: float = 0.6
 
 
 app = FastAPI(title="CrossList API")
@@ -120,12 +141,6 @@ def split_course_code(value: str) -> tuple[str, str]:
     return parts[0].upper(), parts[1].strip()
 
 
-def normalize_course_code(institution_short_name: str, course_code: str) -> str:
-    institution_key = normalize_institution_short_name(institution_short_name)
-    aliases = COURSE_CODE_ALIASES.get(institution_key, {})
-    return aliases.get(course_code.strip().upper(), course_code.strip())
-
-
 async def resolve_institution_id(short_name: str) -> UUID:
     query = text("SELECT id FROM institutions WHERE short_name = :short_name")
     async with async_engine.connect() as connection:
@@ -138,12 +153,84 @@ async def resolve_institution_id(short_name: str) -> UUID:
     return institution_id
 
 
-async def resolve_source_course_id(institution_short_name: str, course_code: str) -> UUID:
-    normalized_course_code = normalize_course_code(institution_short_name, course_code)
-    subject_code, number = split_course_code(normalized_course_code)
-    query = text(
+async def resolve_source_course_input(
+    institution_short_name: str, course_code: str
+) -> tuple[str, UUID | None, list[CourseSuggestion] | None, CourseLookupError | None]:
+    institution_key = normalize_institution_short_name(institution_short_name)
+    parts = course_code.strip().split(None, 1)
+    if not parts:
+        return (
+            course_code,
+            None,
+            None,
+            CourseLookupError(
+                course_code=course_code,
+                error="invalid format",
+                institution=institution_key,
+            ),
+        )
+
+    if len(parts) == 1:
+        subject_only_query = text(
+            """
+            SELECT c.id, s.code AS subject_code, c.code, c.title
+            FROM courses c
+            JOIN subjects s ON s.id = c.subject_id
+            JOIN institutions i ON i.id = c.institution_id
+            WHERE i.short_name = :institution_short_name
+              AND s.code = :subject_code
+            ORDER BY length(c.code), c.code
+            LIMIT 8
+            """
+        )
+        async with async_engine.connect() as connection:
+            rows = (
+                await connection.execute(
+                    subject_only_query,
+                    {
+                        "institution_short_name": institution_key,
+                        "subject_code": parts[0].upper(),
+                    },
+                )
+            ).mappings().all()
+        if rows:
+            suggestions = [
+                CourseSuggestion(
+                    course_id=row["id"],
+                    course_code=f"{row['subject_code']} {row['code']}",
+                    title=row["title"],
+                )
+                for row in rows
+            ]
+            return course_code, None, suggestions, None
+        return (
+            course_code,
+            None,
+            None,
+            CourseLookupError(
+                course_code=course_code,
+                error="not found",
+                institution=institution_key,
+            ),
+        )
+
+    try:
+        subject_code, number = split_course_code(course_code)
+    except HTTPException:
+        return (
+            course_code,
+            None,
+            None,
+            CourseLookupError(
+                course_code=course_code,
+                error="invalid format",
+                institution=institution_key,
+            ),
+        )
+
+    exact_query = text(
         """
-        SELECT c.id
+        SELECT c.id, s.code AS subject_code, c.code, c.title
         FROM courses c
         JOIN subjects s ON s.id = c.subject_id
         JOIN institutions i ON i.id = c.institution_id
@@ -152,30 +239,134 @@ async def resolve_source_course_id(institution_short_name: str, course_code: str
           AND c.code = :course_number
         """
     )
+    fuzzy_query = text(
+        """
+        SELECT c.id, s.code AS subject_code, c.code, c.title
+        FROM courses c
+        JOIN subjects s ON s.id = c.subject_id
+        JOIN institutions i ON i.id = c.institution_id
+        WHERE i.short_name = :institution_short_name
+          AND s.code = :subject_code
+          AND c.code ILIKE :course_number_prefix
+        ORDER BY
+          CASE
+            WHEN substring(c.code FROM char_length(:course_number) + 1 FOR 1) ~ '^[A-Za-z]$' THEN 0
+            ELSE 1
+          END,
+          length(c.code),
+          c.code
+        LIMIT 8
+        """
+    )
     params = {
-        "institution_short_name": normalize_institution_short_name(institution_short_name),
+        "institution_short_name": institution_key,
         "subject_code": subject_code,
         "course_number": number,
+        "course_number_prefix": f"{number}%",
     }
     async with async_engine.connect() as connection:
-        course_id = await connection.scalar(query, params)
-    if course_id is None:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Course '{course_code}' was not found for institution '{institution_short_name}'.",
+        exact_rows = (await connection.execute(exact_query, params)).mappings().all()
+        if exact_rows:
+            row = exact_rows[0]
+            return f"{row['subject_code']} {row['code']}", row["id"], None, None
+
+        fuzzy_rows = (await connection.execute(fuzzy_query, params)).mappings().all()
+
+    if len(fuzzy_rows) == 1:
+        row = fuzzy_rows[0]
+        return f"{row['subject_code']} {row['code']}", row["id"], None, None
+
+    if len(fuzzy_rows) > 1:
+        suggestions = [
+            CourseSuggestion(
+                course_id=row["id"],
+                course_code=f"{row['subject_code']} {row['code']}",
+                title=row["title"],
+            )
+            for row in fuzzy_rows
+        ]
+        return course_code, None, suggestions, None
+
+    return (
+        course_code,
+        None,
+        None,
+        CourseLookupError(
+            course_code=course_code,
+            error="not found",
+            institution=institution_key,
         )
-    return course_id
+    )
 
 
-@app.post("/api/match", response_model=list[MatchResult])
-async def api_match(payload: ApiMatchRequest) -> list[MatchResult]:
-    source_course_ids = [
-        await resolve_source_course_id(item.institution_short_name, item.course_code)
-        for item in payload.source_courses
-    ]
+@app.post("/api/match", response_model=list[ApiMatchItem])
+async def api_match(payload: ApiMatchRequest) -> list[ApiMatchItem]:
     target_institution_id = await resolve_institution_id(payload.target_institution_short_name)
-    return await match_courses(
-        source_course_ids=source_course_ids,
+    response_items: list[ApiMatchItem] = []
+
+    for item in payload.source_courses:
+        resolved_course_code, source_course_id, suggestions, lookup_error = await resolve_source_course_input(
+            item.institution_short_name,
+            item.course_code,
+        )
+        if lookup_error is not None:
+            response_items.append(
+                ApiMatchItem(
+                    input_course_code=item.course_code,
+                    resolved_course_code=resolved_course_code,
+                    error=lookup_error,
+                )
+            )
+            continue
+        if suggestions is not None:
+            response_items.append(
+                ApiMatchItem(
+                    input_course_code=item.course_code,
+                    resolved_course_code=resolved_course_code,
+                    suggestions=suggestions,
+                )
+            )
+            continue
+        if source_course_id is None:
+            response_items.append(
+                ApiMatchItem(
+                    input_course_code=item.course_code,
+                    resolved_course_code=resolved_course_code,
+                    error=CourseLookupError(
+                        course_code=item.course_code,
+                        error="not found",
+                        institution=normalize_institution_short_name(item.institution_short_name),
+                    ),
+                )
+            )
+            continue
+
+        match_result = (
+            await match_courses(
+                source_course_ids=[source_course_id],
+                target_institution_id=target_institution_id,
+                similarity_threshold=payload.similarity_threshold,
+            )
+        )[0]
+        response_items.append(
+            ApiMatchItem(
+                input_course_code=item.course_code,
+                resolved_course_code=resolved_course_code,
+                match_result=match_result,
+            )
+        )
+
+    return response_items
+
+
+@app.post("/api/match/by-description", response_model=list[CourseMatch])
+async def api_match_by_description(payload: DescriptionMatchRequest) -> list[CourseMatch]:
+    if not payload.description.strip():
+        raise HTTPException(status_code=400, detail="Description is required.")
+
+    target_institution_id = await resolve_institution_id(payload.target_institution_short_name)
+    return await match_by_description(
+        description=payload.description,
         target_institution_id=target_institution_id,
         similarity_threshold=payload.similarity_threshold,
     )

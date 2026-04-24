@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+import asyncio
+import os
 from typing import Literal
 from uuid import UUID
 
-from openai import AsyncOpenAI
+from openai import APIError, APITimeoutError, AsyncOpenAI, RateLimitError
 from pydantic import BaseModel
 from sqlalchemy import text
 
 from db.session import async_engine
 
 EXPLANATION_CACHE: dict[tuple[UUID, UUID], str] = {}
+DESCRIPTION_EMBEDDING_CACHE: dict[str, list[float]] = {}
+EMBEDDING_MODEL = "text-embedding-3-small"
+RETRY_DELAYS_SECONDS = (2, 4, 8)
 
 
 class CourseSchema(BaseModel):
@@ -60,6 +65,35 @@ async def generate_explanation(source_course: CourseSchema, target_course: Cours
     explanation = (response.output_text or "").strip()
     EXPLANATION_CACHE[cache_key] = explanation
     return explanation
+
+
+async def embed_query_text(description: str) -> list[float]:
+    normalized = description.strip()
+    if normalized in DESCRIPTION_EMBEDDING_CACHE:
+        return DESCRIPTION_EMBEDDING_CACHE[normalized]
+
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY is not set")
+
+    client = AsyncOpenAI(api_key=api_key)
+    last_error: Exception | None = None
+    try:
+        for attempt, delay in enumerate(RETRY_DELAYS_SECONDS, start=1):
+            try:
+                response = await client.embeddings.create(model=EMBEDDING_MODEL, input=[normalized])
+                vector = response.data[0].embedding
+                DESCRIPTION_EMBEDDING_CACHE[normalized] = vector
+                return vector
+            except (RateLimitError, APITimeoutError, APIError) as exc:
+                last_error = exc
+                if attempt == len(RETRY_DELAYS_SECONDS):
+                    break
+                await asyncio.sleep(delay)
+    finally:
+        await client.close()
+
+    raise RuntimeError(f"Description embedding request failed: {last_error}") from last_error
 
 
 def vector_literal(values: list[float]) -> str:
@@ -220,6 +254,44 @@ async def fetch_candidate_matches(
     return [dict(row) for row in rows]
 
 
+async def fetch_semantic_candidates_for_vector(
+    *,
+    target_institution_id: UUID,
+    query_vector: list[float],
+    top_k: int,
+) -> list[dict]:
+    sql = text(
+        """
+        SELECT
+          c.id,
+          c.institution_id,
+          i.short_name AS institution_short_name,
+          i.name AS institution_name,
+          s.code AS subject_code,
+          c.code,
+          c.title,
+          c.description,
+          c.units,
+          1 - (ce.embedding <=> CAST(:query_vector AS vector)) AS similarity_score
+        FROM course_embeddings ce
+        JOIN courses c ON c.id = ce.course_id
+        JOIN subjects s ON s.id = c.subject_id
+        JOIN institutions i ON i.id = c.institution_id
+        WHERE c.institution_id = :target_institution_id
+        ORDER BY ce.embedding <=> CAST(:query_vector AS vector)
+        LIMIT :top_k
+        """
+    )
+    params = {
+        "target_institution_id": target_institution_id,
+        "query_vector": vector_literal(query_vector),
+        "top_k": top_k,
+    }
+    async with async_engine.connect() as connection:
+        rows = (await connection.execute(sql, params)).mappings().all()
+    return [dict(row) for row in rows]
+
+
 async def fetch_official_matches(
     *,
     source_course_id: UUID,
@@ -345,3 +417,40 @@ async def match_courses(
         )
 
     return results
+
+
+async def match_by_description(
+    *,
+    description: str,
+    target_institution_id: UUID,
+    top_k: int = 3,
+    similarity_threshold: float = 0.6,
+) -> list[CourseMatch]:
+    query_vector = await embed_query_text(description)
+    candidate_rows = await fetch_semantic_candidates_for_vector(
+        target_institution_id=target_institution_id,
+        query_vector=query_vector,
+        top_k=top_k,
+    )
+
+    matches: list[CourseMatch] = []
+    for row in candidate_rows:
+        score = max(0.0, min(1.0, float(row["similarity_score"] or 0.0)))
+        if score < similarity_threshold:
+            continue
+
+        target_course = build_course_schema(row)
+        matches.append(
+            CourseMatch(
+                target_course_id=target_course.id,
+                target_course=target_course,
+                similarity_score=score,
+                match_type="SEMANTIC",
+                articulation_id=None,
+                agreement_year=None,
+                explanation=None,
+            )
+        )
+
+    matches.sort(key=sort_key)
+    return matches[:top_k]

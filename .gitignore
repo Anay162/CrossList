@@ -4,6 +4,9 @@ data/*
 node_modules/
 .next/
 .venv/
+.env
+.env.*
+!.env.example
 __pycache__/
 *.pyc
 *.egg-info/

@@ -43,6 +43,26 @@ type MatchResult = {
   matches: CourseMatch[];
 };
 
+type CourseSuggestion = {
+  course_id: string;
+  course_code: string;
+  title: string;
+};
+
+type CourseLookupError = {
+  course_code: string;
+  error: string;
+  institution: string;
+};
+
+type MatchResponseItem = {
+  input_course_code: string;
+  resolved_course_code: string | null;
+  match_result: MatchResult | null;
+  suggestions: CourseSuggestion[] | null;
+  error: CourseLookupError | null;
+};
+
 type MatchPanelProps = {
   apiUrl: string;
 };
@@ -73,20 +93,32 @@ function primaryMatch(result: MatchResult): CourseMatch | null {
   return result.matches[0] ?? null;
 }
 
+function parseCourseLines(value: string) {
+  return value
+    .split(/[\n,]+/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
 export function MatchPanel({ apiUrl }: MatchPanelProps) {
   const [institutions, setInstitutions] = useState<Institution[]>([]);
   const [sourceInstitution, setSourceInstitution] = useState("SMC");
   const [targetInstitution, setTargetInstitution] = useState("UC Davis");
   const [coursesText, setCoursesText] = useState("MATH 7\nCS 55\nENGL 1\nPSYCH 1");
-  const [results, setResults] = useState<MatchResult[]>([]);
+  const [results, setResults] = useState<MatchResponseItem[]>([]);
   const [selectedResult, setSelectedResult] = useState<{
     sourceCourse: CourseSchema;
     match: CourseMatch;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [networkError, setNetworkError] = useState<string | null>(null);
   const [isLoadingInstitutions, setIsLoadingInstitutions] = useState(true);
   const [isLoadingResults, setIsLoadingResults] = useState(false);
   const [isDownloadingReport, setIsDownloadingReport] = useState(false);
+  const [descriptionInputs, setDescriptionInputs] = useState<Record<string, string>>({});
+  const [descriptionResults, setDescriptionResults] = useState<Record<string, CourseMatch[]>>({});
+  const [descriptionErrors, setDescriptionErrors] = useState<Record<string, string>>({});
+  const [descriptionLoading, setDescriptionLoading] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     async function loadInstitutions() {
@@ -128,19 +160,17 @@ export function MatchPanel({ apiUrl }: MatchPanelProps) {
     }
   }, [targetInstitution, targetOptions]);
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function runMatchRequest(rawCoursesText: string) {
     setError(null);
+    setNetworkError(null);
     setIsLoadingResults(true);
+    setDescriptionResults({});
+    setDescriptionErrors({});
 
-    const sourceCourses = coursesText
-      .split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .map((courseCode) => ({
-        institution_short_name: sourceInstitution,
-        course_code: courseCode,
-      }));
+    const sourceCourses = parseCourseLines(rawCoursesText).map((courseCode) => ({
+      institution_short_name: sourceInstitution,
+      course_code: courseCode,
+    }));
 
     try {
       const response = await fetch(`${apiUrl}/api/match`, {
@@ -160,13 +190,89 @@ export function MatchPanel({ apiUrl }: MatchPanelProps) {
         throw new Error(payload.detail ?? "Unable to find matches");
       }
 
-      const data = (await response.json()) as MatchResult[];
+      const data = (await response.json()) as MatchResponseItem[];
       setResults(data);
     } catch (submitError) {
       setResults([]);
-      setError(submitError instanceof Error ? submitError.message : "Unable to find matches");
+      if (submitError instanceof TypeError) {
+        setNetworkError("Could not reach the CrossList server. Is the API running?");
+      } else {
+        setError(submitError instanceof Error ? submitError.message : "Unable to find matches");
+      }
     } finally {
       setIsLoadingResults(false);
+    }
+  }
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (isLoadingResults) {
+      return;
+    }
+
+    await runMatchRequest(coursesText);
+  }
+
+  async function handleSuggestionSelect(inputCourseCode: string, selectedCourseCode: string) {
+    const updatedLines = parseCourseLines(coursesText).map((line) =>
+      line === inputCourseCode ? selectedCourseCode : line
+    );
+    const updatedText = updatedLines.join("\n");
+    setCoursesText(updatedText);
+    await runMatchRequest(updatedText);
+  }
+
+  async function handleDescriptionSearch(result: MatchResult) {
+    const key = result.source_course_id;
+    const description = (descriptionInputs[key] ?? "").trim();
+    if (!description) {
+      setDescriptionErrors((current) => ({
+        ...current,
+        [key]: "Add a short description before searching.",
+      }));
+      return;
+    }
+
+    setDescriptionLoading((current) => ({ ...current, [key]: true }));
+    setDescriptionErrors((current) => ({ ...current, [key]: "" }));
+
+    try {
+      const response = await fetch(`${apiUrl}/api/match/by-description`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          description,
+          target_institution_short_name: targetInstitution,
+          similarity_threshold: UI_SIMILARITY_THRESHOLD,
+        }),
+      });
+
+      if (!response.ok) {
+        const payload = (await response.json()) as { detail?: string };
+        throw new Error(payload.detail ?? "Unable to search by description");
+      }
+
+      const matches = (await response.json()) as CourseMatch[];
+      setDescriptionResults((current) => ({ ...current, [key]: matches }));
+      if (matches.length === 0) {
+        setDescriptionErrors((current) => ({
+          ...current,
+          [key]: `No close description matches found at ${targetInstitution}.`,
+        }));
+      }
+    } catch (searchError) {
+      if (searchError instanceof TypeError) {
+        setNetworkError("Could not reach the CrossList server. Is the API running?");
+      } else {
+        setDescriptionErrors((current) => ({
+          ...current,
+          [key]: searchError instanceof Error ? searchError.message : "Unable to search by description",
+        }));
+      }
+    } finally {
+      setDescriptionLoading((current) => ({ ...current, [key]: false }));
     }
   }
 
@@ -275,8 +381,20 @@ export function MatchPanel({ apiUrl }: MatchPanelProps) {
               </div>
             </div>
 
-            <Button type="submit" size="lg" className="w-full rounded-lg sm:w-auto" disabled={isLoadingInstitutions || isLoadingResults}>
-              {isLoadingResults ? "Finding Matches..." : "Find Matches"}
+            <Button
+              type="submit"
+              size="lg"
+              className="w-full rounded-lg sm:w-auto"
+              disabled={isLoadingInstitutions || isLoadingResults}
+            >
+              {isLoadingResults ? (
+                <>
+                  <span className="mr-2 inline-block h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+                  Finding Matches...
+                </>
+              ) : (
+                "Find Matches"
+              )}
             </Button>
           </form>
         </Card>
@@ -296,6 +414,12 @@ export function MatchPanel({ apiUrl }: MatchPanelProps) {
             </div>
           ) : null}
 
+          {networkError ? (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+              {networkError}
+            </div>
+          ) : null}
+
           {isLoadingResults ? (
             <div className="space-y-3" aria-live="polite" aria-busy="true">
               {[0, 1, 2].map((index) => (
@@ -310,14 +434,75 @@ export function MatchPanel({ apiUrl }: MatchPanelProps) {
           ) : results.length > 0 ? (
             <div className="space-y-3">
               {results.map((result) => {
-                const match = primaryMatch(result);
+                if (result.error) {
+                  return (
+                    <Card key={`error-${result.input_course_code}`} className="space-y-3">
+                      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                        <div className="space-y-1">
+                          <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
+                            {result.input_course_code}
+                          </p>
+                          <h3 className="text-lg font-semibold text-slate-900">Course not found</h3>
+                        </div>
+                        <span
+                          className={cn(
+                            "inline-flex w-fit items-center rounded-full px-3 py-1 text-xs font-medium",
+                            BADGE_STYLES.NONE
+                          )}
+                        >
+                          {BADGE_LABELS.NONE}
+                        </span>
+                      </div>
+                      <p className="text-sm text-slate-600">
+                        {result.error.course_code} was not found at {result.error.institution}.
+                      </p>
+                    </Card>
+                  );
+                }
+
+                if (result.suggestions && result.suggestions.length > 0) {
+                  return (
+                    <Card key={`suggestions-${result.input_course_code}`} className="space-y-3">
+                      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                        <div className="space-y-1">
+                          <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
+                            {result.input_course_code}
+                          </p>
+                          <h3 className="text-lg font-semibold text-slate-900">Choose the course you meant</h3>
+                        </div>
+                        <span className="inline-flex w-fit items-center rounded-full border border-slate-300 bg-slate-100 px-3 py-1 text-xs font-medium text-slate-700">
+                          Suggestions
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {result.suggestions.map((suggestion) => (
+                          <button
+                            key={suggestion.course_id}
+                            type="button"
+                            onClick={() => void handleSuggestionSelect(result.input_course_code, suggestion.course_code)}
+                            className="rounded-full border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 transition hover:border-sky-300 hover:bg-sky-50"
+                          >
+                            {suggestion.course_code} — {suggestion.title}
+                          </button>
+                        ))}
+                      </div>
+                    </Card>
+                  );
+                }
+
+                const matchResult = result.match_result;
+                if (!matchResult) {
+                  return null;
+                }
+
+                const match = primaryMatch(matchResult);
                 if (!match) {
                   return null;
                 }
 
                 return (
                   <Card
-                    key={result.source_course_id}
+                    key={matchResult.source_course_id}
                     className={cn(
                       "space-y-3",
                       match.match_type === "SEMANTIC" && "cursor-pointer focus-within:ring-2 focus-within:ring-yellow-300 hover:border-yellow-300"
@@ -326,9 +511,9 @@ export function MatchPanel({ apiUrl }: MatchPanelProps) {
                     <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                       <div className="space-y-1">
                         <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
-                          {formatSourceCourse(result.source_course)}
+                          {result.resolved_course_code ?? formatSourceCourse(matchResult.source_course)}
                         </p>
-                        <h3 className="text-lg font-semibold text-slate-900">{result.source_course.title}</h3>
+                        <h3 className="text-lg font-semibold text-slate-900">{matchResult.source_course.title}</h3>
                       </div>
                       <span
                         className={cn(
@@ -346,13 +531,13 @@ export function MatchPanel({ apiUrl }: MatchPanelProps) {
                       tabIndex={match.match_type === "SEMANTIC" ? 0 : -1}
                       onClick={() => {
                         if (match.match_type === "SEMANTIC") {
-                          setSelectedResult({ sourceCourse: result.source_course, match });
+                          setSelectedResult({ sourceCourse: matchResult.source_course, match });
                         }
                       }}
                       onKeyDown={(event) => {
                         if (match.match_type === "SEMANTIC" && (event.key === "Enter" || event.key === " ")) {
                           event.preventDefault();
-                          setSelectedResult({ sourceCourse: result.source_course, match });
+                          setSelectedResult({ sourceCourse: matchResult.source_course, match });
                         }
                       }}
                     >
@@ -376,9 +561,54 @@ export function MatchPanel({ apiUrl }: MatchPanelProps) {
                       ) : null}
 
                       {match.match_type === "NONE" ? (
-                        <p className="text-sm text-slate-600">
-                          No equivalent found — consider petitioning your registrar
-                        </p>
+                        <div className="space-y-3">
+                          <p className="text-sm text-slate-600">No equivalent found at {targetInstitution}</p>
+                          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                            <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
+                              Tip: Try searching by course description instead
+                            </p>
+                            <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+                              <input
+                                type="text"
+                                value={descriptionInputs[matchResult.source_course_id] ?? ""}
+                                onChange={(event) =>
+                                  setDescriptionInputs((current) => ({
+                                    ...current,
+                                    [matchResult.source_course_id]: event.target.value,
+                                  }))
+                                }
+                                placeholder="e.g. introduction to programming in Python"
+                                className="h-10 flex-1 rounded-lg border border-gray-300 bg-white px-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-sky-500 focus:ring-2 focus:ring-sky-200"
+                              />
+                              <Button
+                                type="button"
+                                variant="outline"
+                                onClick={() => void handleDescriptionSearch(matchResult)}
+                                disabled={descriptionLoading[matchResult.source_course_id]}
+                              >
+                                {descriptionLoading[matchResult.source_course_id] ? "Searching..." : "Search by Description"}
+                              </Button>
+                            </div>
+                            {descriptionErrors[matchResult.source_course_id] ? (
+                              <p className="mt-2 text-sm text-red-700">{descriptionErrors[matchResult.source_course_id]}</p>
+                            ) : null}
+                            {descriptionResults[matchResult.source_course_id]?.length ? (
+                              <div className="mt-3 space-y-2">
+                                {descriptionResults[matchResult.source_course_id].map((candidate) => (
+                                  <div
+                                    key={candidate.target_course_id}
+                                    className="rounded-lg border border-yellow-200 bg-yellow-50 px-3 py-2 text-sm text-slate-700"
+                                  >
+                                    <p className="font-medium text-slate-900">
+                                      {formatTargetCourse(candidate.target_course)} {candidate.target_course.title}
+                                    </p>
+                                    <p>{Math.round(candidate.similarity_score * 100)}% similar</p>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : null}
+                          </div>
+                        </div>
                       ) : null}
                     </div>
                   </Card>

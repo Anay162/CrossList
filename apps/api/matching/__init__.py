@@ -5,6 +5,7 @@ from .matcher import (
     fetch_course_schema,
     fetch_pair_similarity,
     generate_explanation,
+    match_by_description,
     match_courses,
 )
 
@@ -15,5 +16,6 @@ __all__ = [
     "fetch_course_schema",
     "fetch_pair_similarity",
     "generate_explanation",
+    "match_by_description",
     "match_courses",
 ]
