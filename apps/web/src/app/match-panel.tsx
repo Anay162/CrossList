@@ -81,6 +81,30 @@ const BADGE_LABELS: Record<MatchType, string> = {
   NONE: "No Match Found",
 };
 
+function ShieldIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-3.5 w-3.5 fill-current" aria-hidden="true">
+      <path d="M12 2 4 5v6c0 5.25 3.438 9.563 8 11 4.563-1.438 8-5.75 8-11V5l-8-3Zm0 2.125 6 2.25v4.625c0 4.13-2.54 7.612-6 8.94-3.46-1.328-6-4.81-6-8.94V6.375l6-2.25Z" />
+    </svg>
+  );
+}
+
+function SparklesIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-3.5 w-3.5 fill-current" aria-hidden="true">
+      <path d="m12 2 1.7 4.8L18.5 8l-4.8 1.2L12 14l-1.7-4.8L5.5 8l4.8-1.2L12 2Zm7 10 .9 2.6L22.5 15l-2.6.6L19 18.2l-.9-2.6-2.6-.6 2.6-.4.9-2.6ZM6 13l1.2 3.3 3.3 1.2-3.3 1.2L6 22l-1.2-3.3L1.5 17.5l3.3-1.2L6 13Z" />
+    </svg>
+  );
+}
+
+function DownloadIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-4 w-4 fill-current" aria-hidden="true">
+      <path d="M11 3h2v9.17l2.59-2.58L17 11l-5 5-5-5 1.41-1.41L11 12.17V3Zm-7 14h16v4H4v-4Z" />
+    </svg>
+  );
+}
+
 function formatSourceCourse(course: CourseSchema) {
   return `${course.subject_code} ${course.code}`;
 }
@@ -504,23 +528,43 @@ export function MatchPanel({ apiUrl }: MatchPanelProps) {
                   <Card
                     key={matchResult.source_course_id}
                     className={cn(
-                      "space-y-3",
+                      "space-y-3 hover:shadow-md transition-shadow duration-150",
                       match.match_type === "SEMANTIC" && "cursor-pointer focus-within:ring-2 focus-within:ring-yellow-300 hover:border-yellow-300"
                     )}
                   >
-                    <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                      <div className="space-y-1">
-                        <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
-                          {result.resolved_course_code ?? formatSourceCourse(matchResult.source_course)}
-                        </p>
-                        <h3 className="text-lg font-semibold text-slate-900">{matchResult.source_course.title}</h3>
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="min-w-0 flex-1 space-y-3">
+                        <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
+                          <div className="min-w-0">
+                            <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
+                              Source
+                            </p>
+                            <p className="truncate text-base font-semibold text-slate-900">
+                              {result.resolved_course_code ?? formatSourceCourse(matchResult.source_course)} —{" "}
+                              {matchResult.source_course.title}
+                            </p>
+                          </div>
+                          <span className="text-lg text-slate-400">→</span>
+                          <div className="min-w-0">
+                            <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
+                              Best Match
+                            </p>
+                            <p className="truncate text-base font-semibold text-slate-900">
+                              {match.match_type === "NONE"
+                                ? `No equivalent found at ${targetInstitution}`
+                                : `${formatTargetCourse(match.target_course)} — ${match.target_course.title}`}
+                            </p>
+                          </div>
+                        </div>
                       </div>
                       <span
                         className={cn(
-                          "inline-flex w-fit items-center rounded-full px-3 py-1 text-xs font-medium",
+                          "inline-flex shrink-0 items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium",
                           BADGE_STYLES[match.match_type]
                         )}
                       >
+                        {match.match_type === "OFFICIAL" ? <ShieldIcon /> : null}
+                        {match.match_type === "SEMANTIC" ? <SparklesIcon /> : null}
                         {BADGE_LABELS[match.match_type]}
                       </span>
                     </div>
@@ -541,10 +585,6 @@ export function MatchPanel({ apiUrl }: MatchPanelProps) {
                         }
                       }}
                     >
-                      <p className="font-medium text-slate-900">
-                        Best match: {formatTargetCourse(match.target_course)} {match.target_course.title}
-                      </p>
-
                       {match.match_type === "OFFICIAL" ? (
                         <p className="text-sm text-slate-600">
                           Confirmed by ASSIST.org {match.agreement_year ?? ""}
@@ -556,6 +596,12 @@ export function MatchPanel({ apiUrl }: MatchPanelProps) {
                           <p className="text-sm text-slate-600">
                             {Math.round(match.similarity_score * 100)}% similar
                           </p>
+                          <div className="h-1 rounded bg-slate-200">
+                            <div
+                              className="h-1 rounded bg-yellow-400"
+                              style={{ width: `${Math.round(match.similarity_score * 100)}%` }}
+                            />
+                          </div>
                           <p className="text-sm leading-6 text-slate-700">{match.explanation}</p>
                         </>
                       ) : null}
@@ -642,7 +688,7 @@ export function MatchPanel({ apiUrl }: MatchPanelProps) {
               </button>
             </div>
 
-            <div className="mt-6 grid gap-6 lg:grid-cols-2">
+            <div className="mt-6 grid gap-6 lg:grid-cols-[minmax(0,1fr)_1px_minmax(0,1fr)]">
               <div className="space-y-3 rounded-lg border border-gray-200 p-4">
                 <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">Source Course</p>
                 <h4 className="text-lg font-semibold text-slate-900">
@@ -657,6 +703,8 @@ export function MatchPanel({ apiUrl }: MatchPanelProps) {
                 <p className="text-sm leading-6 text-slate-700">{selectedResult.sourceCourse.description}</p>
               </div>
 
+              <div className="hidden bg-slate-200 lg:block" />
+
               <div className="space-y-3 rounded-lg border border-gray-200 p-4">
                 <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">Target Course</p>
                 <h4 className="text-lg font-semibold text-slate-900">
@@ -669,12 +717,13 @@ export function MatchPanel({ apiUrl }: MatchPanelProps) {
                   Units: {selectedResult.match.target_course.units ?? "N/A"}
                 </p>
                 <div className="space-y-2">
-                  <p className="text-sm text-slate-700">
-                    Similarity score: {Math.round(selectedResult.match.similarity_score * 100)}%
-                  </p>
-                  <div className="h-2 rounded-full bg-slate-200">
+                  <div className="flex items-center justify-between text-sm text-slate-700">
+                    <p className="font-medium">Similarity Score</p>
+                    <p>{Math.round(selectedResult.match.similarity_score * 100)}%</p>
+                  </div>
+                  <div className="h-3 rounded-full bg-slate-200">
                     <div
-                      className="h-2 rounded-full bg-yellow-500"
+                      className="h-3 rounded-full bg-yellow-400"
                       style={{ width: `${Math.round(selectedResult.match.similarity_score * 100)}%` }}
                     />
                   </div>
@@ -691,7 +740,7 @@ export function MatchPanel({ apiUrl }: MatchPanelProps) {
                 </p>
               </div>
 
-              <div className="rounded-lg border border-gray-200 p-4">
+              <div className="bg-blue-50 rounded-lg p-4">
                 <p className="text-sm font-semibold text-slate-900">Next Steps</p>
                 <p className="mt-2 text-sm leading-6 text-slate-700">
                   This match was identified by AI similarity analysis, not by a faculty committee. To request formal credit evaluation:
@@ -712,7 +761,8 @@ export function MatchPanel({ apiUrl }: MatchPanelProps) {
                 onClick={() => void handleDownloadReport()}
                 disabled={isDownloadingReport}
               >
-                {isDownloadingReport ? "Generating Report..." : "Download Comparison Report (PDF)"}
+                <DownloadIcon />
+                <span>{isDownloadingReport ? "Generating Report..." : "Download Comparison Report (PDF)"}</span>
               </Button>
             </div>
           </div>
